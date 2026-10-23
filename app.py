@@ -1,82 +1,101 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
+import plotly.express as px
 from sklearn.linear_model import LinearRegression
 
-st.set_page_config(page_title="Housing Crash Course", page_icon="🏚️")
-
+st.set_page_config(page_title="Housing Crash Course", page_icon="🏚️", layout="wide")
 st.title("🏚️ Housing Crash Course")
-st.caption("Is that house a steal or a rip-off? Let the data (and a little linear regression) decide.")
+st.caption("Is that house a steal or a rip-off? Upload a CSV, explore it, and let a straight line guess the price.")
 
-# 1. Upload the CSV and show a preview
-st.header("Step 1: Bring your data 📂")
-uploaded_file = st.file_uploader("Drop in a CSV (try Housing.csv from the repo)", type="csv")
+# Same shape as the class apps:
+# the user uploads a file, and everything else sits inside an if.
+uploaded_file = st.file_uploader("Upload a CSV file (try Housing.csv from the repo)", type="csv")
 
-if uploaded_file is None:
-    st.info("👆 Upload a CSV file to get started.")
-    st.stop()
+if uploaded_file:
+    df = pd.read_csv(uploaded_file)
 
-df = pd.read_csv(uploaded_file)
-st.write(f"Loaded **{len(df)} rows** and **{len(df.columns)} columns**. Here's a sneak peek:")
-st.dataframe(df.head())
+    numeric_cols = df.select_dtypes(include="number").columns.tolist()
+    if len(numeric_cols) < 3:
+        st.error("This file needs at least three numeric columns.")
+        st.stop()
 
-numeric_cols = df.select_dtypes(include="number").columns.tolist()
+    # 1. Preview
+    st.subheader("1. Preview")
+    st.write(f"{len(df):,} rows and {len(df.columns)} columns. Here are the first few:")
+    st.dataframe(df.head(), hide_index=True, width="stretch")
 
-if len(numeric_cols) < 3:
-    st.error("This app needs a CSV with at least three numeric columns.")
-    st.stop()
+    # 2. Chart
+    # The user picks a column and a chart type.
+    # Line and scatter need a second column to compare against, so we default to price.
+    st.subheader("2. Explore a column")
+    c1, c2 = st.columns(2)
+    column = c1.selectbox("Column", numeric_cols, index=1)
+    chart_type = c2.radio("Chart type", ["Histogram", "Scatter", "Line"], horizontal=True)
 
-# 2. Choose a column and a chart type
-st.header("Step 2: Look around 👀")
-column = st.selectbox("Choose a column", numeric_cols)
-chart_type = st.radio("Choose a chart type", ["Line", "Scatter", "Histogram"], horizontal=True)
+    if chart_type == "Histogram":
+        fig = px.histogram(df, x=column, nbins=30, title=f"How {column} is spread out")
+    else:
+        others = [c for c in numeric_cols if c != column]
+        default = others.index("price") if "price" in others else 0
+        against = st.selectbox("Compare against", others, index=default)
+        if chart_type == "Scatter":
+            fig = px.scatter(df, x=column, y=against, title=f"{against} versus {column}")
+        else:
+            avg = df.groupby(column, as_index=False)[against].mean()
+            fig = px.line(avg, x=column, y=against, markers=True, title=f"Average {against} by {column}")
+    st.plotly_chart(fig, width="stretch")
 
-fig, ax = plt.subplots()
-if chart_type == "Line":
-    ax.plot(df[column])
-    ax.set_xlabel("Row")
-    ax.set_ylabel(column)
-elif chart_type == "Scatter":
-    ax.scatter(df.index, df[column], s=10)
-    ax.set_xlabel("Row")
-    ax.set_ylabel(column)
+    # 3. Model
+    # Two inputs and one target, then a linear regression.
+    st.subheader("3. Predict with a linear regression")
+    m1, m2, m3 = st.columns(3)
+    target = m1.selectbox("Target: what you want to predict", numeric_cols)
+    input_options = [c for c in numeric_cols if c != target]
+    input_1 = m2.selectbox("Input 1", input_options, index=0)
+    input_2 = m3.selectbox("Input 2", [c for c in input_options if c != input_1], index=0)
+
+    features = [input_1, input_2]
+    data = df[features + [target]].dropna()
+    if len(data) < 5:
+        st.error("Need at least 5 rows with values in all three columns.")
+        st.stop()
+
+    X = data[features]
+    y = data[target]
+    model = LinearRegression()
+    model.fit(X, y)
+
+    k1, k2, k3 = st.columns(3)
+    k1.metric(f"Each extra {input_1} adds", f"{model.coef_[0]:,.0f}")
+    k2.metric(f"Each extra {input_2} adds", f"{model.coef_[1]:,.0f}")
+    k3.metric("R2 on this data", f"{model.score(X, y):.2f}")
+
+    # Try it: the user types values and the model gives an answer.
+    # The table we pass to predict has the same column names in the same order as training.
+    st.subheader("Try it")
+    t1, t2 = st.columns(2)
+    values = []
+    for col, box in zip(features, [t1, t2]):
+        if pd.api.types.is_integer_dtype(data[col]):
+            values.append(box.number_input(f"Enter {col}", value=int(data[col].median()), step=1))
+        else:
+            values.append(box.number_input(f"Enter {col}", value=float(data[col].median())))
+
+    new_row = pd.DataFrame([values], columns=features)
+    prediction = model.predict(new_row)[0]
+    st.metric(f"Predicted {target}", f"{prediction:,.0f}")
+
+    # A line does not know where its data stopped, so warn when a value is outside the range.
+    for col, value in zip(features, values):
+        low, high = data[col].min(), data[col].max()
+        if value < low or value > high:
+            st.warning(f"{col} = {value:,} is outside the range the model learned from ({low:,} to {high:,}). Treat the number with caution.")
+
+    # What the model is for, and what happens when it is wrong.
+    st.info(
+        "**What is this model for?** It gives a quick estimate of a house's price from its size and number of bedrooms, "
+        "so a buyer or seller can tell if an asking price is reasonable; when it is wrong, a seller can underprice and "
+        "lose money or overprice and the house sits unsold, and a buyer can overpay."
+    )
 else:
-    ax.hist(df[column], bins=30)
-    ax.set_xlabel(column)
-    ax.set_ylabel("Count")
-ax.set_title(f"{chart_type} of {column}")
-st.pyplot(fig)
-
-# 3. Linear regression with two inputs and a target
-st.header("Step 3: Gaze into the crystal ball 🔮")
-st.write("Pick what you want to predict and two things that might drive it.")
-target = st.selectbox("Choose the target (what to predict)", numeric_cols)
-input_options = [c for c in numeric_cols if c != target]
-input_1 = st.selectbox("Choose input 1", input_options, index=0)
-input_2 = st.selectbox("Choose input 2", [c for c in input_options if c != input_1], index=0)
-
-features = [input_1, input_2]
-data = df[features + [target]].dropna()
-
-model = LinearRegression()
-model.fit(data[features], data[target])
-
-st.write(f"Model: {target} = {model.intercept_:,.2f} "
-         f"+ {model.coef_[0]:,.2f} x {input_1} + {model.coef_[1]:,.2f} x {input_2}")
-st.write(f"R-squared on the data: {model.score(data[features], data[target]):.3f}")
-
-st.write("Now describe your dream (or nightmare) house:")
-value_1 = st.number_input(input_1, value=float(data[input_1].mean()))
-value_2 = st.number_input(input_2, value=float(data[input_2].mean()))
-
-# Use the same column names and order as in training
-new_row = pd.DataFrame([[value_1, value_2]], columns=features)
-prediction = model.predict(new_row)[0]
-st.success(f"🔮 Predicted {target}: **{prediction:,.0f}**")
-
-# 4. What the model is for and what happens when it is wrong
-st.write(
-    "⚠️ **Reality check:** This model estimates a house's sale price from simple facts like its area and number of bedrooms "
-    "to help buyers and sellers set a fair asking price, and when it is wrong a seller may underprice and lose money "
-    "or overprice and the house sits unsold, while a buyer may overpay."
-)
+    st.info("Upload a CSV file to get started. It needs at least three numeric columns.")
