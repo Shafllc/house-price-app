@@ -1,4 +1,4 @@
-# House Price Explorer
+# 🏚️ Housing Crash Course
 
 A simple Streamlit app built for class. It lets you:
 
